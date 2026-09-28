@@ -233,7 +233,7 @@ function handleBluetoothEvent(event) {
 }
 
 function handleGroundHit() {
-  // Prevent duplicate events while already in game over.
+  // Ignore duplicate GROUND_HIT notifications during the 10-second reset.
   if (game.classList.contains("over")) {
     return;
   }
@@ -257,28 +257,28 @@ function startCountdown(seconds) {
 
   countdownInterval = setInterval(() => {
     remaining--;
-    timer.textContent = remaining;
 
     if (remaining <= 0) {
       clearInterval(countdownInterval);
+      countdownInterval = null;
+
+      // IMPORTANT:
+      // The website resets itself after 10 seconds.
+      // It does not depend on receiving a BLE RESET message.
+      resetGame();
+      return;
     }
+
+    timer.textContent = remaining;
   }, 1000);
-}
-
-function resetGame() {
-  clearInterval(countdownInterval);
-
-  timer.style.display = "none";
-
-  game.className = "game ready";
-  state.textContent = "KEEP IT UP!";
-  substate.textContent = "The balloon is ready.";
 }
 
 function setReadyState() {
   clearInterval(countdownInterval);
+  countdownInterval = null;
 
   timer.style.display = "none";
+  timer.textContent = "10";
 
   game.className = "game ready";
   state.textContent = "KEEP IT UP!";
