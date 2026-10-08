@@ -1,311 +1,360 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Balloon Game</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: Arial, Helvetica, sans-serif;
-      background: #0b1020;
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .app {
-      width: min(900px, 94vw);
-      text-align: center;
-    }
-
-    h1 {
-      font-size: clamp(42px, 8vw, 82px);
-      margin: 0 0 10px;
-      letter-spacing: -3px;
-    }
-
-    .status {
-      color: #aeb8d0;
-      font-size: 18px;
-      margin-bottom: 28px;
-    }
-
-    button {
-      border: 0;
-      border-radius: 14px;
-      padding: 16px 28px;
-      font-size: 18px;
-      font-weight: 700;
-      cursor: pointer;
-      background: #ffffff;
-      color: #0b1020;
-    }
-
-    button:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-    }
-
-    .game {
-      margin-top: 30px;
-      border-radius: 28px;
-      min-height: 420px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      background: #151d35;
-      transition: 0.2s;
-    }
-
-    .state {
-      font-size: clamp(44px, 9vw, 90px);
-      font-weight: 900;
-      margin: 0;
-    }
-
-    .substate {
-      margin-top: 14px;
-      font-size: 22px;
-      color: #b9c3d9;
-    }
-
-    .timer {
-      margin-top: 25px;
-      font-size: 72px;
-      font-weight: 900;
-      display: none;
-    }
-
-    .score {
-      margin-top: 30px;
-      font-size: 22px;
-      color: #aeb8d0;
-    }
-
-    .score span {
-      color: white;
-      font-weight: 800;
-    }
-
-    .log {
-      margin-top: 20px;
-      font-family: monospace;
-      font-size: 13px;
-      color: #74809b;
-      min-height: 20px;
-    }
-
-    .game.over {
-      background: #42151b;
-    }
-
-    .game.over .state {
-      color: #ff5c69;
-    }
-
-    .game.ready .state {
-      color: #65e6a5;
-    }
-
-    .game.waiting .state {
-      color: #ffd166;
-    }
-  </style>
-</head>
-
-<body>
-  <main class="app">
-    <h1>BALLOON GAME</h1>
-    <div id="status" class="status">XIAO not connected</div>
-
-    <button id="connectButton">Connect Balloon</button>
-
-    <section id="game" class="game waiting">
-      <div id="state" class="state">WAITING</div>
-      <div id="substate" class="substate">Connect the balloon controller to start.</div>
-      <div id="timer" class="timer">10</div>
-      <div class="score">Ground hits: <span id="score">0</span></div>
-      <div id="log" class="log"></div>
-    </section>
-  </main>
-
-<script>
-const SERVICE_UUID =
-  "19b10000-e8f2-537e-4f6c-d104768a1214";
-
-const CHARACTERISTIC_UUID =
-  "19b10001-e8f2-537e-4f6c-d104768a1214";
-
-const DEVICE_NAME = "BalloonGame";
-
-const connectButton = document.getElementById("connectButton");
-const statusText = document.getElementById("status");
-const game = document.getElementById("game");
-const state = document.getElementById("state");
-const substate = document.getElementById("substate");
-const timer = document.getElementById("timer");
-const scoreElement = document.getElementById("score");
-const logElement = document.getElementById("log");
-
-let device = null;
-let characteristic = null;
-let score = 0;
-let countdownInterval = null;
-
-connectButton.addEventListener("click", connectBalloon);
-
-async function connectBalloon() {
-  if (!navigator.bluetooth) {
-    setStatus("Web Bluetooth is not supported by this browser.");
-    return;
-  }
-
-  try {
-    setStatus("Choose BalloonGame from the Bluetooth list...");
-    connectButton.disabled = true;
-
-    device = await navigator.bluetooth.requestDevice({
-      filters: [
-        { name: DEVICE_NAME }
-      ],
-      optionalServices: [SERVICE_UUID]
-    });
-
-    device.addEventListener("gattserverdisconnected", handleDisconnect);
-
-    setStatus("Connecting to " + (device.name || DEVICE_NAME) + "...");
-
-    const server = await device.gatt.connect();
-
-    const service = await server.getPrimaryService(SERVICE_UUID);
-
-    characteristic =
-      await service.getCharacteristic(CHARACTERISTIC_UUID);
-
-    await characteristic.startNotifications();
-
-    characteristic.addEventListener(
-      "characteristicvaluechanged",
-      handleBluetoothEvent
-    );
-
-    setStatus("CONNECTED");
-    connectButton.textContent = "Connected";
-    connectButton.disabled = true;
-
-    setReadyState();
-
-  } catch (error) {
-    console.error(error);
-
-    setStatus("Connection failed.");
-    connectButton.disabled = false;
-    connectButton.textContent = "Connect Balloon";
-
-    log("Error: " + error.message);
-  }
-}
-
-function handleBluetoothEvent(event) {
-  const value = event.target.value;
-
-  const decoder = new TextDecoder();
-  const message = decoder.decode(value).trim();
-
-  log("BLE: " + message);
-
-  if (message === "READY") {
-    setReadyState();
-  }
-
-  else if (message === "GROUND_HIT") {
-    handleGroundHit();
-  }
-
-  else if (message === "RESET") {
-    resetGame();
-  }
-}
-
-function handleGroundHit() {
-  // Ignore duplicate GROUND_HIT notifications during the 10-second reset.
-  if (game.classList.contains("over")) {
-    return;
-  }
-
-  score++;
-  scoreElement.textContent = score;
-
-  game.className = "game over";
-  state.textContent = "GAME OVER";
-  substate.textContent = "THE BALLOON HIT THE GROUND";
-  timer.style.display = "block";
-
-  startCountdown(10);
-}
-
-function startCountdown(seconds) {
-  clearInterval(countdownInterval);
-
-  let remaining = seconds;
-  timer.textContent = remaining;
-
-  countdownInterval = setInterval(() => {
-    remaining--;
-
-    if (remaining <= 0) {
-      clearInterval(countdownInterval);
-      countdownInterval = null;
-
-      // IMPORTANT:
-      // The website resets itself after 10 seconds.
-      // It does not depend on receiving a BLE RESET message.
-      resetGame();
-      return;
-    }
-
-    timer.textContent = remaining;
-  }, 1000);
-}
-
-function setReadyState() {
-  clearInterval(countdownInterval);
-  countdownInterval = null;
-
-  timer.style.display = "none";
-  timer.textContent = "10";
-
-  game.className = "game ready";
-  state.textContent = "KEEP IT UP!";
-  substate.textContent = "Hit the balloon. Don't let it touch the ground.";
-}
-
-function handleDisconnect() {
-  characteristic = null;
-
-  setStatus("XIAO disconnected");
-
-  connectButton.disabled = false;
-  connectButton.textContent = "Reconnect Balloon";
-
-  game.className = "game waiting";
-  state.textContent = "DISCONNECTED";
-  substate.textContent = "Reconnect the balloon controller.";
-  timer.style.display = "none";
-}
-
-function setStatus(message) {
-  statusText.textContent = message;
-}
-
-function log(message) {
-  logElement.textContent = message;
-}
-</script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Balloon Game</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #0b1020;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .app {
+        width: min(900px, 94vw);
+        text-align: center;
+      }
+
+      h1 {
+        font-size: clamp(42px, 8vw, 82px);
+        margin: 0 0 10px;
+        letter-spacing: -3px;
+      }
+
+      .status {
+        color: #aeb8d0;
+        font-size: 18px;
+        margin-bottom: 28px;
+      }
+
+      .battery {
+        margin: -18px 0 22px;
+        color: #aeb8d0;
+        font-size: 14px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 16px 28px;
+        font-size: 18px;
+        font-weight: 700;
+        cursor: pointer;
+        background: #ffffff;
+        color: #0b1020;
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .game {
+        margin-top: 30px;
+        border-radius: 28px;
+        min-height: 420px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #151d35;
+        transition: 0.2s;
+      }
+
+      .state {
+        font-size: clamp(44px, 9vw, 90px);
+        font-weight: 900;
+        margin: 0;
+      }
+
+      .substate {
+        margin-top: 14px;
+        font-size: 22px;
+        color: #b9c3d9;
+      }
+
+      .timer {
+        margin-top: 25px;
+        font-size: 72px;
+        font-weight: 900;
+        display: none;
+      }
+
+      .score {
+        margin-top: 30px;
+        font-size: 22px;
+        color: #aeb8d0;
+      }
+
+      .score span {
+        color: white;
+        font-weight: 800;
+      }
+
+      .log {
+        margin-top: 20px;
+        font-family: monospace;
+        font-size: 13px;
+        color: #74809b;
+        min-height: 20px;
+      }
+
+      .game.over {
+        background: #42151b;
+      }
+
+      .game.over .state {
+        color: #ff5c69;
+      }
+
+      .game.ready .state {
+        color: #65e6a5;
+      }
+
+      .game.waiting .state {
+        color: #ffd166;
+      }
+    </style>
+  </head>
+
+  <body>
+    <main class="app">
+      <h1>BALLOON GAME</h1>
+      <div id="status" class="status">XIAO not connected</div>
+      <div id="battery" class="battery">Battery: --</div>
+
+      <button id="connectButton">Connect Balloon</button>
+
+      <section id="game" class="game waiting">
+        <div id="state" class="state">WAITING</div>
+        <div id="substate" class="substate">
+          Connect the balloon controller to start.
+        </div>
+        <div id="timer" class="timer">10</div>
+        <div class="score">Ground hits: <span id="score">0</span></div>
+        <div id="log" class="log"></div>
+      </section>
+    </main>
+
+    <script>
+      const SERVICE_UUID = "19b10000-e8f2-537e-4f6c-d104768a1214";
+      const CHARACTERISTIC_UUID = "19b10001-e8f2-537e-4f6c-d104768a1214";
+      const BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb";
+      const BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb";
+
+      const DEVICE_NAME = "BalloonGame";
+
+      const connectButton = document.getElementById("connectButton");
+      const statusText = document.getElementById("status");
+      const batteryText = document.getElementById("battery");
+      const game = document.getElementById("game");
+      const state = document.getElementById("state");
+      const substate = document.getElementById("substate");
+      const timer = document.getElementById("timer");
+      const scoreElement = document.getElementById("score");
+      const logElement = document.getElementById("log");
+
+      let device = null;
+      let characteristic = null;
+      let batteryCharacteristic = null;
+      let score = 0;
+      let resetTimeout = null;
+      let countdownInterval = null;
+      let hitFeedbackTimeout = null;
+
+      connectButton.addEventListener("click", connectBalloon);
+
+      async function connectBalloon() {
+        try {
+          device = await navigator.bluetooth.requestDevice({
+            filters: [{ name: DEVICE_NAME }],
+            optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID],
+          });
+
+          device.addEventListener("gattserverdisconnected", handleDisconnect);
+
+          const server = await device.gatt.connect();
+
+          const service = await server.getPrimaryService(SERVICE_UUID);
+
+          characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+          const batteryService =
+            await server.getPrimaryService(BATTERY_SERVICE_UUID);
+          batteryCharacteristic =
+            await batteryService.getCharacteristic(BATTERY_LEVEL_UUID);
+          batteryCharacteristic.addEventListener(
+            "characteristicvaluechanged",
+            handleBatteryUpdate,
+          );
+
+          const initialBattery = await batteryCharacteristic.readValue();
+          updateBatteryLevel(initialBattery);
+          await batteryCharacteristic.startNotifications();
+
+          characteristic.addEventListener(
+            "characteristicvaluechanged",
+            handleBluetoothEvent,
+          );
+
+          await characteristic.startNotifications();
+
+          statusText.textContent = "CONNECTED";
+          connectButton.textContent = "Connected";
+          connectButton.disabled = true;
+
+          showKeepItUp();
+        } catch (error) {
+          console.error(error);
+
+          statusText.textContent = "Connection failed";
+          connectButton.disabled = false;
+          connectButton.textContent = "Connect Balloon";
+        }
+      }
+
+      function handleBluetoothEvent(event) {
+        const decoder = new TextDecoder();
+        const message = decoder
+          .decode(event.target.value)
+          .replace(/\0/g, "")
+          .trim();
+
+        console.log("BLE:", message);
+        logElement.textContent = `Controller event: ${message}`;
+
+        if (message === "GROUND_HIT") {
+          showGameOver();
+        } else if (message === "PLAYER_HIT") {
+          showPersonHit();
+        } else if (message === "RESET") {
+          showKeepItUp();
+        } else if (message === "READY") {
+          showKeepItUp();
+        }
+      }
+
+      function handleBatteryUpdate(event) {
+        updateBatteryLevel(event.target.value);
+      }
+
+      function updateBatteryLevel(value) {
+        batteryText.textContent = `Battery: ${value.getUint8(0)}%`;
+      }
+
+      function showGameOver() {
+        if (game.classList.contains("over")) {
+          return;
+        }
+
+        // Cancel any previous timers.
+        clearTimeout(hitFeedbackTimeout);
+        clearTimeout(resetTimeout);
+        clearInterval(countdownInterval);
+
+        score++;
+        scoreElement.textContent = score;
+
+        // Show GAME OVER
+        game.className = "game over";
+
+        state.textContent = "GAME OVER";
+        substate.textContent = "THE BALLOON HIT THE GROUND";
+
+        timer.style.display = "block";
+
+        // Start countdown
+        let seconds = 10;
+        timer.textContent = seconds;
+
+        countdownInterval = setInterval(() => {
+          seconds--;
+
+          if (seconds > 0) {
+            timer.textContent = seconds;
+          }
+        }, 1000);
+
+        // EXACTLY 10 SECONDS LATER:
+        // return to KEEP IT UP
+        resetTimeout = setTimeout(() => {
+          clearInterval(countdownInterval);
+          countdownInterval = null;
+
+          showKeepItUp();
+        }, 10000);
+      }
+
+      function showPersonHit() {
+        if (!game.classList.contains("ready")) {
+          return;
+        }
+
+        clearTimeout(hitFeedbackTimeout);
+        state.textContent = "NICE HIT!";
+        substate.textContent = "BALLOON HIT BY A PLAYER";
+
+        hitFeedbackTimeout = setTimeout(() => {
+          if (game.classList.contains("ready")) {
+            state.textContent = "KEEP IT UP!";
+            substate.textContent =
+              "Hit the balloon. Don't let it touch the ground.";
+          }
+          hitFeedbackTimeout = null;
+        }, 1200);
+      }
+
+      function showKeepItUp() {
+        clearTimeout(hitFeedbackTimeout);
+        hitFeedbackTimeout = null;
+        clearTimeout(resetTimeout);
+        clearInterval(countdownInterval);
+
+        resetTimeout = null;
+        countdownInterval = null;
+
+        timer.style.display = "none";
+
+        game.className = "game ready";
+
+        state.textContent = "KEEP IT UP!";
+
+        substate.textContent =
+          "Hit the balloon. Don't let it touch the ground.";
+      }
+
+      function handleDisconnect() {
+        characteristic = null;
+        batteryCharacteristic = null;
+
+        statusText.textContent = "XIAO disconnected";
+        batteryText.textContent = "Battery: --";
+
+        connectButton.disabled = false;
+        connectButton.textContent = "Reconnect Balloon";
+
+        clearTimeout(hitFeedbackTimeout);
+        clearTimeout(resetTimeout);
+        clearInterval(countdownInterval);
+
+        timer.style.display = "none";
+
+        game.className = "game waiting";
+
+        state.textContent = "DISCONNECTED";
+
+        substate.textContent = "Reconnect the balloon controller.";
+      }
+    </script>
+  </body>
 </html>

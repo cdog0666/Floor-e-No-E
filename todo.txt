@@ -1,0 +1,1 @@
+I need to make the app have a way to turn battery on and off and to see battery status
