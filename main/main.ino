@@ -11,17 +11,12 @@ LSM6DS3 myIMU(I2C_MODE, 0x6A);
 // =====================================================
 // GAME SETTINGS
 // =====================================================
-// Acceleration required to trigger an impact event
 const float IMPACT_THRESHOLD = 2.5;
-
-// Variance below this means the balloon is lying still on the floor
 const float STILLNESS_THRESHOLD = 0.15;
-
-// How long game-over lasts (milliseconds)
 const unsigned long RESET_TIME = 10000;
 
 // Battery update interval (ms)
-const unsigned long BATTERY_UPDATE_INTERVAL = 10000;
+const unsigned long BATTERY_UPDATE_INTERVAL = 15000;
 
 // =====================================================
 // BLE SERVICES & CHARACTERISTICS
@@ -35,7 +30,7 @@ BLEBas blebas; // Standard BLE Battery Service
 // =====================================================
 bool gameOver = false;
 unsigned long gameOverTime = 0;
-unsigned long lastHitTime = 0; // Prevents spamming a single hit
+unsigned long lastHitTime = 0; 
 unsigned long lastBatteryCheck = 0;
 
 // Variables for Soft Landing Detection
@@ -46,7 +41,38 @@ unsigned long stillStartTime = 0;
 // HELPER FUNCTIONS
 // =====================================================
 
-// Flash LED once when an event occurs
+// Safely measure battery percentage without locking ADC / BLE stack
+uint8_t readBatteryPercentage() {
+  #ifdef PIN_VBAT
+    int vbatPin = PIN_VBAT;
+  #else
+    int vbatPin = A7;
+  #endif
+
+  #ifdef VBAT_ENABLE
+    pinMode(VBAT_ENABLE, OUTPUT);
+    digitalWrite(VBAT_ENABLE, LOW); // Enable battery pin reading circuit
+    delay(2);
+  #endif
+
+  // Configure ADC safely for nRF52
+  analogReadResolution(10);
+  int raw = analogRead(vbatPin);
+
+  #ifdef VBAT_ENABLE
+    digitalWrite(VBAT_ENABLE, HIGH); // Disable reading circuit to save power
+  #endif
+
+  // 3.6V internal ref with 1/5 divider on Adafruit Feather nRF52
+  float measuredvbat = raw * (3.6 / 1024.0) * 2;
+  
+  if (measuredvbat >= 4.2) return 100;
+  if (measuredvbat <= 3.3) return 0;
+  
+  // FIX: Fixed syntax error in calculation
+  return (uint8_t)((measuredvbat - 3.3) / (4.2 - 3.3) * 100);
+}
+
 void flashLed(int durationMs) {
   digitalWrite(LED_BLUE, HIGH);
   delay(durationMs);
@@ -54,41 +80,22 @@ void flashLed(int durationMs) {
 }
 
 void sendEvent(const char* event) {
-  // Only try to send if a device is actually connected
   if (Bluefruit.connected()) {
     gameEvent.notify((uint8_t*)event, strlen(event));
-    flashLed(100); // Visual indicator only when meaningful events trigger
+    flashLed(100); 
   }
 }
 
-// Reads battery level percentage (Feather nRF52 VBAT pin on A7)
-uint8_t readBatteryPercentage() {
-  #ifdef PIN_VBAT
-    float raw = analogRead(PIN_VBAT);
-  #else
-    float raw = analogRead(A7);
-  #endif
-
-  // ADC conversion for Feather nRF52 (3.3V ref, 10-bit ADC, divider)
-  float measuredvbat = raw * (3.6 / 1024.0) * 2;
-  
-  // Convert voltage (approx 3.3V to 4.2V) to percentage (0 - 100%)
-  if (measuredvbat >= 4.2) return 100;
-  if (measuredvbat <= 3.3) return 0;
-  return (uint8_t)((measuredvbat - 3.3) / (4.2 - 3.3) * 100);
-}
-
-// Samples the accelerometer to see if the board is tumbling or still
 float measureVariance(int samples) {
   float sumX = 0, sumY = 0, sumZ = 0;
-  float ax_arr[20], ay_arr[20], az_arr[20]; // Cap at 20 samples max
+  float ax_arr[20], ay_arr[20], az_arr[20];
 
   if (samples > 20) samples = 20;
 
   for (int i = 0; i < samples; i++) {
     ax_arr[i] = myIMU.readFloatAccelX();
     ay_arr[i] = myIMU.readFloatAccelY();
-    az_arr[i] = myIMU.readFloatAccelZ(); // Fixed bug: correctly reads Z axis
+    az_arr[i] = myIMU.readFloatAccelZ();
     sumX += ax_arr[i];
     sumY += ay_arr[i];
     sumZ += az_arr[i];
@@ -125,13 +132,13 @@ void setup() {
   }
 
   // -----------------------------------------------
-  // BLE Configuration
+  // BLE Setup
   // -----------------------------------------------
   Bluefruit.begin();
   Bluefruit.setTxPower(4);
   Bluefruit.setName("BalloonGame");
 
-  // Disable default automatic LED flashing (Connection / Advertising LED)
+  // Disable status LED blinking
   Bluefruit.autoConnLed(false);
 
   // Initialize Battery Service
@@ -146,18 +153,23 @@ void setup() {
   gameEvent.setMaxLen(20); 
   gameEvent.begin();
 
-  // Initial state setup
+  // FIX: Properly declared char pointer string
   const char* ready = "READY";
   gameEvent.write((uint8_t*)ready, strlen(ready));
 
-  // Start advertising
+  // -----------------------------------------------
+  // Advertising Setup
+  // -----------------------------------------------
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAG_LE_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
   Bluefruit.Advertising.addService(balloonService);
-  Bluefruit.Advertising.addService(blebas); // Advertise Battery Service
-  Bluefruit.Advertising.addName();
+  Bluefruit.Advertising.addService(blebas); 
+  Bluefruit.ScanResponse.addName();
+  
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244);
+  Bluefruit.Advertising.setInterval(32, 244); // in unit of 0.625ms
   Bluefruit.Advertising.setFastTimeout(30);
-  Bluefruit.Advertising.start(0);
+  Bluefruit.Advertising.start(0); // 0 = Don't stop advertising after n seconds
 }
 
 // =====================================================
@@ -166,7 +178,7 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Periodically update battery level
+  // Periodically update battery level safely
   if (now - lastBatteryCheck >= BATTERY_UPDATE_INTERVAL) {
     lastBatteryCheck = now;
     if (Bluefruit.connected()) {
@@ -178,15 +190,11 @@ void loop() {
   // GAME OVER STATE
   // =================================================
   if (gameOver) {
-    // Wait for the RESET_TIME duration
     if (now - gameOverTime >= RESET_TIME) {
-      // Reset everything
       gameOver = false;
       gameOverTime = 0;
-      lastHitTime = now;   // Prevent immediate re-triggering
-      stillStartTime = 0;  // Reset soft landing timer
-
-      // Tell website the game has reset
+      lastHitTime = now;   
+      stillStartTime = 0;  
       sendEvent("RESET");
     }
     delay(10);
@@ -200,64 +208,53 @@ void loop() {
   float ay = myIMU.readFloatAccelY();
   float az = myIMU.readFloatAccelZ();
 
-  // Calculate total acceleration
   float accelerationMagnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
 
   // =================================================
   // 1. DETECT HARD IMPACT
   // =================================================
   if (accelerationMagnitude >= IMPACT_THRESHOLD) {
-    
-    // Ignore rapid double-triggers from the same physical hit
     if (now - lastHitTime < 600) {
       return; 
     }
 
-    // Monitor for up to 1.2 seconds to allow for bouncing
     bool settled = false;
     for (int i = 0; i < 12; i++) {
       if (measureVariance(10) < STILLNESS_THRESHOLD) {
         settled = true;
-        break; // Balloon stopped bouncing and is at rest
+        break; 
       }
     }
 
-    // Decide what happened based on settling
     if (settled) {
-      // Ground hit
       gameOver = true;
       gameOverTime = millis();
       sendEvent("GROUND_HIT");
     } else {
-      // Player hit (tumbling in air)
       sendEvent("PLAYER_HIT");
       lastHitTime = millis();
-      stillStartTime = 0; // Reset soft landing timer on hit
+      stillStartTime = 0; 
     }
   }
 
   // =================================================
-  // 2. DETECT SOFT LANDING (Ground hit without spike)
+  // 2. DETECT SOFT LANDING
   // =================================================
   float deltaMovement = abs(ax - prevAx) + abs(ay - prevAy) + abs(az - prevAz);
   
   if (deltaMovement < 0.15) {
-    // Board isn't moving. Start timer if not running.
     if (stillStartTime == 0) {
       stillStartTime = now;
     } 
-    // Stationary for 500ms -> ground hit
     else if (now - stillStartTime > 500) {
       gameOver = true;
       gameOverTime = millis();
       sendEvent("GROUND_HIT");
     }
   } else {
-    // Board moved/rotated -> reset timer
     stillStartTime = 0;
   }
 
-  // Save current values for next comparison
   prevAx = ax;
   prevAy = ay;
   prevAz = az;

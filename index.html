@@ -8,6 +8,7 @@
       * {
         box-sizing: border-box;
       }
+
       body {
         margin: 0;
         min-height: 100vh;
@@ -148,9 +149,12 @@
 
     <script>
       const SERVICE_UUID = "19b10000-e8f2-537e-4f6c-d104768a1214";
+
       const CHARACTERISTIC_UUID = "19b10001-e8f2-537e-4f6c-d104768a1214";
-      const BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb";
-      const BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb";
+
+      // Custom battery characteristic defined in the Arduino sketch.
+      const BATTERY_CHARACTERISTIC_UUID =
+        "19b10002-e8f2-537e-4f6c-d104768a1214";
 
       const DEVICE_NAME = "BalloonGame";
 
@@ -175,32 +179,28 @@
       connectButton.addEventListener("click", connectBalloon);
 
       async function connectBalloon() {
+        if (!navigator.bluetooth) {
+          statusText.textContent =
+            "Bluetooth unavailable. Open in Chrome or Edge over HTTPS or localhost.";
+          return;
+        }
+
+        statusText.textContent = "Connecting...";
+        connectButton.disabled = true;
+
         try {
           device = await navigator.bluetooth.requestDevice({
             filters: [{ name: DEVICE_NAME }],
-            optionalServices: [SERVICE_UUID, BATTERY_SERVICE_UUID],
+            optionalServices: [SERVICE_UUID],
           });
 
           device.addEventListener("gattserverdisconnected", handleDisconnect);
 
           const server = await device.gatt.connect();
-
           const service = await server.getPrimaryService(SERVICE_UUID);
 
+          // Connect to game-event characteristic.
           characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
-
-          const batteryService =
-            await server.getPrimaryService(BATTERY_SERVICE_UUID);
-          batteryCharacteristic =
-            await batteryService.getCharacteristic(BATTERY_LEVEL_UUID);
-          batteryCharacteristic.addEventListener(
-            "characteristicvaluechanged",
-            handleBatteryUpdate,
-          );
-
-          const initialBattery = await batteryCharacteristic.readValue();
-          updateBatteryLevel(initialBattery);
-          await batteryCharacteristic.startNotifications();
 
           characteristic.addEventListener(
             "characteristicvaluechanged",
@@ -209,15 +209,32 @@
 
           await characteristic.startNotifications();
 
+          // Connect to battery characteristic on the SAME service.
+          batteryCharacteristic = await service.getCharacteristic(
+            BATTERY_CHARACTERISTIC_UUID,
+          );
+
+          batteryCharacteristic.addEventListener(
+            "characteristicvaluechanged",
+            handleBatteryUpdate,
+          );
+
+          // Read the current battery percentage immediately.
+          const initialBattery = await batteryCharacteristic.readValue();
+
+          updateBatteryLevel(initialBattery);
+
+          // Subscribe to subsequent battery updates.
+          await batteryCharacteristic.startNotifications();
+
           statusText.textContent = "CONNECTED";
           connectButton.textContent = "Connected";
-          connectButton.disabled = true;
-
           showKeepItUp();
         } catch (error) {
           console.error(error);
 
-          statusText.textContent = "Connection failed";
+          statusText.textContent = `Connection failed: ${error.message || error.name || "Error"}`;
+
           connectButton.disabled = false;
           connectButton.textContent = "Connect Balloon";
         }
@@ -225,6 +242,7 @@
 
       function handleBluetoothEvent(event) {
         const decoder = new TextDecoder();
+
         const message = decoder
           .decode(event.target.value)
           .replace(/\0/g, "")
@@ -249,7 +267,12 @@
       }
 
       function updateBatteryLevel(value) {
-        batteryText.textContent = `Battery: ${value.getUint8(0)}%`;
+        // Arduino sends one unsigned byte containing 0–100.
+        const percent = value.getUint8(0);
+
+        batteryText.textContent = `Battery: ${percent}%`;
+
+        console.log("Battery:", `${percent}%`);
       }
 
       function showGameOver() {
@@ -257,7 +280,6 @@
           return;
         }
 
-        // Cancel any previous timers.
         clearTimeout(hitFeedbackTimeout);
         clearTimeout(resetTimeout);
         clearInterval(countdownInterval);
@@ -265,7 +287,6 @@
         score++;
         scoreElement.textContent = score;
 
-        // Show GAME OVER
         game.className = "game over";
 
         state.textContent = "GAME OVER";
@@ -273,7 +294,6 @@
 
         timer.style.display = "block";
 
-        // Start countdown
         let seconds = 10;
         timer.textContent = seconds;
 
@@ -285,8 +305,6 @@
           }
         }, 1000);
 
-        // EXACTLY 10 SECONDS LATER:
-        // return to KEEP IT UP
         resetTimeout = setTimeout(() => {
           clearInterval(countdownInterval);
           countdownInterval = null;
@@ -301,6 +319,7 @@
         }
 
         clearTimeout(hitFeedbackTimeout);
+
         state.textContent = "NICE HIT!";
         substate.textContent = "BALLOON HIT BY A PLAYER";
 
@@ -310,6 +329,7 @@
             substate.textContent =
               "Hit the balloon. Don't let it touch the ground.";
           }
+
           hitFeedbackTimeout = null;
         }, 1200);
       }
@@ -317,6 +337,7 @@
       function showKeepItUp() {
         clearTimeout(hitFeedbackTimeout);
         hitFeedbackTimeout = null;
+
         clearTimeout(resetTimeout);
         clearInterval(countdownInterval);
 
@@ -350,9 +371,7 @@
         timer.style.display = "none";
 
         game.className = "game waiting";
-
         state.textContent = "DISCONNECTED";
-
         substate.textContent = "Reconnect the balloon controller.";
       }
     </script>
