@@ -18,7 +18,7 @@ def handle_notification(sender, data):
         print("💥 BALLOON HIT THE GROUND!")
 
         # Put your website/game logic here later
-        # game_over()
+        # game_over()0.
 
     elif event == "RESET":
         print("🔄 GAME RESET")

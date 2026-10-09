@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XIAO Motion Recorder</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "Segoe UI", Arial, sans-serif;
+        background: #0b1020;
+        color: #eef2ff;
+        font-synthesis: none;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        padding: 40px 18px;
+        background:
+          radial-gradient(ellipse at 50% -20%, #1d2c4e 0, transparent 58%),
+          #0b1020;
+      }
+
+      main {
+        width: min(100%, 960px);
+        margin: 0 auto;
+      }
+
+      header {
+        margin-bottom: 24px;
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        color: #8ca6d8;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(30px, 6vw, 46px);
+        letter-spacing: -0.04em;
+      }
+
+      .intro {
+        max-width: 620px;
+        margin: 10px 0 0;
+        color: #aab6cc;
+        line-height: 1.6;
+      }
+
+      .panel {
+        border: 1px solid #283551;
+        border-radius: 18px;
+        background: rgb(18 27 47 / 92%);
+        box-shadow: 0 18px 55px rgb(0 0 0 / 20%);
+      }
+
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        padding: 18px;
+      }
+
+      button {
+        min-height: 44px;
+        padding: 0 18px;
+        border: 0;
+        border-radius: 10px;
+        background: #dce7ff;
+        color: #101a2d;
+        font: inherit;
+        font-weight: 750;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        border: 1px solid #3b4c6b;
+        background: #1a2741;
+        color: #edf3ff;
+      }
+
+      button.stop {
+        background: #ff7581;
+        color: #281014;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.42;
+      }
+
+      .status {
+        flex: 1 1 220px;
+        min-width: 0;
+        color: #aab6cc;
+        font-size: 14px;
+        text-align: right;
+      }
+
+      .status::before {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 8px;
+        border-radius: 50%;
+        background: #78849a;
+        content: "";
+      }
+
+      .status.connected::before {
+        background: #5de0a2;
+        box-shadow: 0 0 12px #5de0a280;
+      }
+
+      .status.recording {
+        color: #ff9ba3;
+      }
+
+      .status.recording::before {
+        background: #ff6573;
+        box-shadow: 0 0 12px #ff657380;
+      }
+
+      .chart-panel {
+        margin-top: 16px;
+        padding: 18px;
+      }
+
+      .chart-heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      h2 {
+        margin: 0;
+        font-size: 17px;
+      }
+
+      .sample-count,
+      .hint {
+        color: #92a0b9;
+        font-size: 13px;
+      }
+
+      .chart-wrap {
+        position: relative;
+        height: clamp(260px, 48vw, 390px);
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 18px;
+        margin-top: 14px;
+        color: #c1cbe0;
+        font-size: 13px;
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 3px;
+      }
+
+      .hint {
+        margin: 12px 0 0;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 560px) {
+        body {
+          padding: 26px 12px;
+        }
+
+        .controls {
+          align-items: stretch;
+        }
+
+        .controls button {
+          flex: 1 1 130px;
+        }
+
+        .status {
+          flex-basis: 100%;
+          text-align: left;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Seeed Studio XIAO nRF52840 Sense</p>
+        <h1>Motion recorder</h1>
+        <p class="intro">
+          Connect over Bluetooth to view live accelerometer data. Record a
+          section, inspect all four signals, then download that section as CSV.
+        </p>
+      </header>
+
+      <section class="panel controls" aria-label="Recorder controls">
+        <button id="connectButton" type="button">Scan BLE devices</button>
+        <button id="recordButton" class="secondary" type="button" disabled>
+          Record
+        </button>
+        <button id="stopButton" class="stop" type="button" disabled>
+          Stop
+        </button>
+        <button id="downloadButton" class="secondary" type="button" disabled>
+          Download CSV
+        </button>
+        <span id="status" class="status" role="status" aria-live="polite">
+          Not connected
+        </span>
+      </section>
+
+      <section class="panel chart-panel" aria-labelledby="chartTitle">
+        <div class="chart-heading">
+          <h2 id="chartTitle">Recorded section</h2>
+          <span id="sampleCount" class="sample-count">0 samples</span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart" aria-label="Graph of recorded acceleration over time">
+            Your browser does not support canvas.
+          </canvas>
+        </div>
+        <div class="legend" aria-label="Graph legend">
+          <span class="legend-item"><i class="swatch" style="background:#5cc8ff"></i>X</span>
+          <span class="legend-item"><i class="swatch" style="background:#b68cff"></i>Y</span>
+          <span class="legend-item"><i class="swatch" style="background:#ffd166"></i>Z</span>
+          <span class="legend-item"><i class="swatch" style="background:#5de0a2"></i>Magnitude</span>
+        </div>
+        <p id="hint" class="hint">
+          Connect to the XIAO, then press Record to capture a section.
+          Accelerations are shown in g.
+        </p>
+      </section>
+    </main>
+
+    <script>
+      const SERVICE_UUID = "19b10010-e8f2-537e-4f6c-d104768a1214";
+      const CHARACTERISTIC_UUID = "19b10011-e8f2-537e-4f6c-d104768a1214";
+      const DEVICE_NAME = "XIAO-Analytics";
+      const SERIES = [
+        { key: "x", color: "#5cc8ff" },
+        { key: "y", color: "#b68cff" },
+        { key: "z", color: "#ffd166" },
+        { key: "magnitude", color: "#5de0a2" },
+      ];
+
+      const connectButton = document.getElementById("connectButton");
+      const recordButton = document.getElementById("recordButton");
+      const stopButton = document.getElementById("stopButton");
+      const downloadButton = document.getElementById("downloadButton");
+      const statusText = document.getElementById("status");
+      const sampleCount = document.getElementById("sampleCount");
+      const hint = document.getElementById("hint");
+      const canvas = document.getElementById("chart");
+      const context = canvas.getContext("2d");
+      const decoder = new TextDecoder();
+
+      let device = null;
+      let characteristic = null;
+      let samples = [];
+      let recording = false;
+      let recordingStartedAt = 0;
+      let renderPending = false;
+
+      connectButton.addEventListener("click", connect);
+      recordButton.addEventListener("click", startRecording);
+      stopButton.addEventListener("click", stopRecording);
+      downloadButton.addEventListener("click", downloadCsv);
+      window.addEventListener("resize", scheduleRender);
+
+      function setStatus(message, connected = Boolean(device?.gatt?.connected)) {
+        statusText.textContent = message;
+        statusText.classList.toggle("connected", connected);
+        statusText.classList.toggle("recording", recording);
+      }
+
+      async function connect() {
+        if (!navigator.bluetooth) {
+          setStatus("Web Bluetooth unavailable");
+          hint.textContent =
+            "Open this page in a Web Bluetooth-compatible browser over HTTPS or localhost.";
+          return;
+        }
+
+        connectButton.disabled = true;
+        setStatus("Choose XIAO-Analytics...");
+        try {
+          device = await navigator.bluetooth.requestDevice({
+            acceptAllDevices: true,
+            optionalServices: [SERVICE_UUID],
+          });
+          device.addEventListener("gattserverdisconnected", handleDisconnect);
+
+          setStatus("Connecting...");
+          const server = await device.gatt.connect();
+          const service = await server.getPrimaryService(SERVICE_UUID);
+          characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+          characteristic.addEventListener(
+            "characteristicvaluechanged",
+            handleValue,
+          );
+          await characteristic.startNotifications();
+
+          connectButton.textContent = "Connected";
+          connectButton.disabled = true;
+          recordButton.disabled = false;
+          setStatus(`Connected to ${device.name || DEVICE_NAME}`);
+          hint.textContent =
+            "Live values arrive from the board. Press Record to start a new section; Stop ends it.";
+        } catch (error) {
+          device = null;
+          characteristic = null;
+          connectButton.disabled = false;
+          setStatus(`Connection failed: ${error.message}`, false);
+        }
+      }
+
+      function handleValue(event) {
+        const text = decoder.decode(event.target.value).trim();
+        const values = text.split(",").map(Number);
+        if (values.length !== SERIES.length || !values.every(Number.isFinite)) {
+          return;
+        }
+
+        if (recording) {
+          samples.push({
+            time: performance.now() - recordingStartedAt,
+            x: values[0],
+            y: values[1],
+            z: values[2],
+            magnitude: values[3],
+          });
+          sampleCount.textContent = `${samples.length} ${
+            samples.length === 1 ? "sample" : "samples"
+          }`;
+          scheduleRender();
+        }
+      }
+
+      function startRecording() {
+        if (!device?.gatt?.connected || recording) {
+          return;
+        }
+        samples = [];
+        recordingStartedAt = performance.now();
+        recording = true;
+        recordButton.disabled = true;
+        stopButton.disabled = false;
+        downloadButton.disabled = true;
+        sampleCount.textContent = "0 samples";
+        hint.textContent = "Recording… Press Stop to finish this section.";
+        setStatus("Recording");
+        scheduleRender();
+      }
+
+      function stopRecording() {
+        if (!recording) {
+          return;
+        }
+        recording = false;
+        stopButton.disabled = true;
+        recordButton.disabled = !device?.gatt?.connected;
+        downloadButton.disabled = samples.length === 0;
+        hint.textContent = samples.length
+          ? "Section complete. Download the captured samples as a CSV file."
+          : "No samples were received during this section. Check the BLE connection and try again.";
+        setStatus(
+          device?.gatt?.connected ? "Recording stopped" : "Disconnected",
+        );
+        scheduleRender();
+      }
+
+      function handleDisconnect() {
+        if (recording) {
+          stopRecording();
+        }
+        characteristic = null;
+        connectButton.disabled = false;
+        connectButton.textContent = "Scan BLE devices";
+        recordButton.disabled = true;
+        stopButton.disabled = true;
+        setStatus("Disconnected", false);
+      }
+
+      function downloadCsv() {
+        if (samples.length === 0) {
+          return;
+        }
+        const rows = [
+          "elapsed_ms,x_g,y_g,z_g,magnitude_g",
+          ...samples.map((sample) =>
+            [
+              sample.time.toFixed(2),
+              sample.x.toFixed(2),
+              sample.y.toFixed(2),
+              sample.z.toFixed(2),
+              sample.magnitude.toFixed(2),
+            ].join(","),
+          ),
+        ];
+        const blob = new Blob([rows.join("\r\n")], {
+          type: "text/csv;charset=utf-8",
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `xiao-motion-${new Date()
+          .toISOString()
+          .replace(/[:.]/g, "-")}.csv`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function scheduleRender() {
+        if (renderPending) {
+          return;
+        }
+        renderPending = true;
+        requestAnimationFrame(() => {
+          renderPending = false;
+          drawChart();
+        });
+      }
+
+      function drawChart() {
+        const bounds = canvas.getBoundingClientRect();
+        const pixelRatio = window.devicePixelRatio || 1;
+        const width = Math.max(1, Math.round(bounds.width * pixelRatio));
+        const height = Math.max(1, Math.round(bounds.height * pixelRatio));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+        const cssWidth = bounds.width;
+        const cssHeight = bounds.height;
+        context.clearRect(0, 0, cssWidth, cssHeight);
+
+        const plot = {
+          left: 48,
+          right: cssWidth - 14,
+          top: 14,
+          bottom: cssHeight - 32,
+        };
+        const plotWidth = Math.max(1, plot.right - plot.left);
+        const plotHeight = Math.max(1, plot.bottom - plot.top);
+        let yMin = -1;
+        let yMax = 1;
+
+        if (samples.length > 0) {
+          yMin = Infinity;
+          yMax = -Infinity;
+          for (const sample of samples) {
+            for (const { key } of SERIES) {
+              yMin = Math.min(yMin, sample[key]);
+              yMax = Math.max(yMax, sample[key]);
+            }
+          }
+          const padding = Math.max((yMax - yMin) * 0.08, 0.05);
+          yMin -= padding;
+          yMax += padding;
+        }
+
+        context.font = "12px Segoe UI, Arial, sans-serif";
+        context.textBaseline = "middle";
+        context.strokeStyle = "#293650";
+        context.fillStyle = "#91a0ba";
+        context.lineWidth = 1;
+
+        for (let tick = 0; tick <= 4; tick += 1) {
+          const y = plot.top + (plotHeight * tick) / 4;
+          const value = yMax - ((yMax - yMin) * tick) / 4;
+          context.beginPath();
+          context.moveTo(plot.left, y);
+          context.lineTo(plot.right, y);
+          context.stroke();
+          context.textAlign = "right";
+          context.fillText(value.toFixed(2), plot.left - 8, y);
+        }
+
+        context.textAlign = "center";
+        context.textBaseline = "bottom";
+        context.fillStyle = "#91a0ba";
+        context.fillText("Time (ms)", plot.left + plotWidth / 2, cssHeight - 2);
+
+        if (samples.length === 0) {
+          context.textBaseline = "middle";
+          context.fillStyle = "#7888a3";
+          context.fillText(
+            "Recorded data will appear here",
+            plot.left + plotWidth / 2,
+            plot.top + plotHeight / 2,
+          );
+          return;
+        }
+
+        const duration = Math.max(samples[samples.length - 1].time, 1);
+        context.textAlign = "left";
+        context.textBaseline = "top";
+        context.fillText("0", plot.left, plot.bottom + 7);
+        context.textAlign = "right";
+        context.fillText(duration.toFixed(0), plot.right, plot.bottom + 7);
+
+        const stride = Math.max(1, Math.ceil(samples.length / (plotWidth * 2)));
+        for (const series of SERIES) {
+          context.beginPath();
+          context.strokeStyle = series.color;
+          context.lineWidth = 1.7;
+          for (let index = 0; index < samples.length; index += stride) {
+            const sample = samples[index];
+            const x = plot.left + (sample.time / duration) * plotWidth;
+            const y =
+              plot.top +
+              ((yMax - sample[series.key]) / (yMax - yMin)) * plotHeight;
+            if (index === 0) {
+              context.moveTo(x, y);
+            } else {
+              context.lineTo(x, y);
+            }
+          }
+          const last = samples[samples.length - 1];
+          const lastX = plot.left + (last.time / duration) * plotWidth;
+          const lastY =
+            plot.top +
+            ((yMax - last[series.key]) / (yMax - yMin)) * plotHeight;
+          context.lineTo(lastX, lastY);
+          context.stroke();
+        }
+      }
+
+      drawChart();
+    </script>
+  </body>
+</html>

@@ -11,118 +11,141 @@ LSM6DS3 myIMU(I2C_MODE, 0x6A);
 // =====================================================
 // GAME SETTINGS
 // =====================================================
-const float IMPACT_THRESHOLD = 2.5;
-const float STILLNESS_THRESHOLD = 0.15;
+const float IMPACT_THRESHOLD = 7.0;
+const float IMPACT_REARM_THRESHOLD = 2.5;
+const float HAND_IMPACT_DROP_RATE_THRESHOLD = 0.40f;
+const uint8_t PEAK_CONFIRMATION_SAMPLES = 2;
+const unsigned long DECAY_SAMPLE_INTERVAL_MS = 10;
+const unsigned long IMPACT_COOLDOWN_MS = 600;
 const unsigned long RESET_TIME = 10000;
 
-// Battery update interval (ms)
-const unsigned long BATTERY_UPDATE_INTERVAL = 15000;
-
 // =====================================================
-// BLE SERVICES & CHARACTERISTICS
+// BLE
 // =====================================================
 BLEService balloonService("19B10000-E8F2-537E-4F6C-D104768A1214");
-BLECharacteristic gameEvent("19B10001-E8F2-537E-4F6C-D104768A1214");
-BLEBas blebas; // Standard BLE Battery Service
+
+BLECharacteristic gameEvent(
+  "19B10001-E8F2-537E-4F6C-D104768A1214"
+);
+
+// Battery percentage characteristic
+BLECharacteristic batteryLevel(
+  "19B10002-E8F2-537E-4F6C-D104768A1214"
+);
+
+// =====================================================
+// BATTERY SETTINGS
+// =====================================================
+unsigned long lastBatteryUpdate = 0;
+const unsigned long BATTERY_UPDATE_INTERVAL = 5000;
 
 // =====================================================
 // GAME STATE
 // =====================================================
 bool gameOver = false;
 unsigned long gameOverTime = 0;
-unsigned long lastHitTime = 0; 
-unsigned long lastBatteryCheck = 0;
+unsigned long lastHitTime = 0;
+bool impactArmed = true;
+bool classifyingImpact = false;
+float impactPeakMagnitude = 0;
+float impactFirstPostPeakMagnitude = 0;
+uint8_t impactBelowPeakSampleCount = 0;
+unsigned long lastDecaySampleTime = 0;
 
-// Variables for Soft Landing Detection
-float prevAx = 0, prevAy = 0, prevAz = 0;
-unsigned long stillStartTime = 0;
+// =====================================================
+// BATTERY FUNCTIONS
+// =====================================================
+
+// Uses the voltage-reading configuration verified in your test.
+float readBatteryVoltage() {
+  int raw = analogRead(32);
+  return 2.961f * 3.6f * raw / 4096.0f;
+}
+
+// Estimate percentage from single-cell lithium battery voltage.
+int readBatteryPercent() {
+  float voltage = readBatteryVoltage();
+  int percent;
+
+  if (voltage >= 4.20f) {
+    percent = 100;
+  } else if (voltage >= 4.00f) {
+    percent = 80 + (int)((voltage - 4.00f) * 100.0f);
+  } else if (voltage >= 3.85f) {
+    percent = 50 + (int)((voltage - 3.85f) * 200.0f);
+  } else if (voltage >= 3.70f) {
+    percent = 20 + (int)((voltage - 3.70f) * 200.0f);
+  } else if (voltage >= 3.50f) {
+    percent = 5 + (int)((voltage - 3.50f) * 75.0f);
+  } else {
+    percent = 0;
+  }
+
+  return constrain(percent, 0, 100);
+}
+
+// Update battery value and notify connected website.
+void updateBatteryLevel() {
+  unsigned long now = millis();
+
+  if (now - lastBatteryUpdate < BATTERY_UPDATE_INTERVAL) {
+    return;
+  }
+
+  lastBatteryUpdate = now;
+
+  uint8_t percent = (uint8_t)readBatteryPercent();
+
+  // Update the value available through BLE reads.
+  batteryLevel.write(&percent, 1);
+
+  // Notify the website of the new percentage.
+  if (Bluefruit.connected()) {
+    batteryLevel.notify(&percent, 1);
+  }
+}
 
 // =====================================================
 // HELPER FUNCTIONS
 // =====================================================
 
-// Safely measure battery percentage without locking ADC / BLE stack
-uint8_t readBatteryPercentage() {
-  #ifdef PIN_VBAT
-    int vbatPin = PIN_VBAT;
-  #else
-    int vbatPin = A7;
-  #endif
-
-  #ifdef VBAT_ENABLE
-    pinMode(VBAT_ENABLE, OUTPUT);
-    digitalWrite(VBAT_ENABLE, LOW); // Enable battery pin reading circuit
-    delay(2);
-  #endif
-
-  // Configure ADC safely for nRF52
-  analogReadResolution(10);
-  int raw = analogRead(vbatPin);
-
-  #ifdef VBAT_ENABLE
-    digitalWrite(VBAT_ENABLE, HIGH); // Disable reading circuit to save power
-  #endif
-
-  // 3.6V internal ref with 1/5 divider on Adafruit Feather nRF52
-  float measuredvbat = raw * (3.6 / 1024.0) * 2;
-  
-  if (measuredvbat >= 4.2) return 100;
-  if (measuredvbat <= 3.3) return 0;
-  
-  // FIX: Fixed syntax error in calculation
-  return (uint8_t)((measuredvbat - 3.3) / (4.2 - 3.3) * 100);
-}
-
-void flashLed(int durationMs) {
-  digitalWrite(LED_BLUE, HIGH);
-  delay(durationMs);
-  digitalWrite(LED_BLUE, LOW);
-}
-
 void sendEvent(const char* event) {
   if (Bluefruit.connected()) {
     gameEvent.notify((uint8_t*)event, strlen(event));
-    flashLed(100); 
   }
 }
 
-float measureVariance(int samples) {
-  float sumX = 0, sumY = 0, sumZ = 0;
-  float ax_arr[20], ay_arr[20], az_arr[20];
+bool isHandImpact(float peakMagnitude, float nextMagnitude) {
+  const float dropRate =
+    (peakMagnitude - nextMagnitude) / peakMagnitude;
+  return dropRate >= HAND_IMPACT_DROP_RATE_THRESHOLD;
+}
 
-  if (samples > 20) samples = 20;
-
-  for (int i = 0; i < samples; i++) {
-    ax_arr[i] = myIMU.readFloatAccelX();
-    ay_arr[i] = myIMU.readFloatAccelY();
-    az_arr[i] = myIMU.readFloatAccelZ();
-    sumX += ax_arr[i];
-    sumY += ay_arr[i];
-    sumZ += az_arr[i];
-    delay(10);
+void completeImpact(bool handImpact) {
+  classifyingImpact = false;
+  impactArmed = false;
+  if (handImpact) {
+    sendEvent("PLAYER_HIT");
+  } else {
+    gameOver = true;
+    gameOverTime = millis();
+    sendEvent("GROUND_HIT");
   }
-
-  float meanX = sumX / samples;
-  float meanY = sumY / samples;
-  float meanZ = sumZ / samples;
-
-  float varSum = 0;
-  for (int i = 0; i < samples; i++) {
-    float diff = (ax_arr[i] - meanX) * (ax_arr[i] - meanX) +
-                 (ay_arr[i] - meanY) * (ay_arr[i] - meanY) +
-                 (az_arr[i] - meanZ) * (az_arr[i] - meanZ);
-    varSum += diff;
-  }
-
-  return varSum / samples;
 }
 
 // =====================================================
 // SETUP
 // =====================================================
 void setup() {
-  pinMode(LED_BLUE, OUTPUT);
-  digitalWrite(LED_BLUE, LOW);
+  // -----------------------------------------------
+  // Battery voltage measurement
+  // -----------------------------------------------
+  pinMode(32, INPUT);
+  pinMode(14, OUTPUT);
+  digitalWrite(14, LOW);
+
+  analogReference(AR_DEFAULT);
+  analogReadResolution(12);
 
   // -----------------------------------------------
   // Accelerometer
@@ -132,44 +155,41 @@ void setup() {
   }
 
   // -----------------------------------------------
-  // BLE Setup
+  // BLE
   // -----------------------------------------------
   Bluefruit.begin();
   Bluefruit.setTxPower(4);
   Bluefruit.setName("BalloonGame");
 
-  // Disable status LED blinking
-  Bluefruit.autoConnLed(false);
-
-  // Initialize Battery Service
-  blebas.begin();
-  blebas.write(readBatteryPercentage());
-
-  // Custom Game Service
   balloonService.begin();
 
+  // Game event characteristic
   gameEvent.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
   gameEvent.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  gameEvent.setMaxLen(20); 
+  gameEvent.setMaxLen(20);
   gameEvent.begin();
 
-  // FIX: Properly declared char pointer string
   const char* ready = "READY";
   gameEvent.write((uint8_t*)ready, strlen(ready));
 
+  // Battery percentage characteristic
+  batteryLevel.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
+  batteryLevel.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  batteryLevel.setFixedLen(1);
+  batteryLevel.begin();
+
+  uint8_t initialBattery = (uint8_t)readBatteryPercent();
+  batteryLevel.write(&initialBattery, 1);
+
   // -----------------------------------------------
-  // Advertising Setup
+  // Advertising
   // -----------------------------------------------
-  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAG_LE_GENERAL_DISC_MODE);
-  Bluefruit.Advertising.addTxPower();
   Bluefruit.Advertising.addService(balloonService);
-  Bluefruit.Advertising.addService(blebas); 
-  Bluefruit.ScanResponse.addName();
-  
+  Bluefruit.Advertising.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244); // in unit of 0.625ms
+  Bluefruit.Advertising.setInterval(32, 244);
   Bluefruit.Advertising.setFastTimeout(30);
-  Bluefruit.Advertising.start(0); // 0 = Don't stop advertising after n seconds
+  Bluefruit.Advertising.start(0);
 }
 
 // =====================================================
@@ -178,13 +198,8 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // Periodically update battery level safely
-  if (now - lastBatteryCheck >= BATTERY_UPDATE_INTERVAL) {
-    lastBatteryCheck = now;
-    if (Bluefruit.connected()) {
-      blebas.notify(readBatteryPercentage());
-    }
-  }
+  // Keep battery reporting active during game-over.
+  updateBatteryLevel();
 
   // =================================================
   // GAME OVER STATE
@@ -193,13 +208,19 @@ void loop() {
     if (now - gameOverTime >= RESET_TIME) {
       gameOver = false;
       gameOverTime = 0;
-      lastHitTime = now;   
-      stillStartTime = 0;  
+      lastHitTime = now;
+
       sendEvent("RESET");
     }
+
     delay(10);
     return;
   }
+
+  if (now - lastDecaySampleTime < DECAY_SAMPLE_INTERVAL_MS) {
+    return;
+  }
+  lastDecaySampleTime = now;
 
   // =================================================
   // READ ACCELEROMETER
@@ -208,56 +229,48 @@ void loop() {
   float ay = myIMU.readFloatAccelY();
   float az = myIMU.readFloatAccelZ();
 
-  float accelerationMagnitude = sqrt((ax * ax) + (ay * ay) + (az * az));
+  float accelerationMagnitude =
+    sqrtf((ax * ax) + (ay * ay) + (az * az));
 
-  // =================================================
-  // 1. DETECT HARD IMPACT
-  // =================================================
-  if (accelerationMagnitude >= IMPACT_THRESHOLD) {
-    if (now - lastHitTime < 600) {
-      return; 
+  if (!classifyingImpact) {
+    if (!impactArmed &&
+        accelerationMagnitude <= IMPACT_REARM_THRESHOLD &&
+        now - lastHitTime >= IMPACT_COOLDOWN_MS) {
+      impactArmed = true;
     }
 
-    bool settled = false;
-    for (int i = 0; i < 12; i++) {
-      if (measureVariance(10) < STILLNESS_THRESHOLD) {
-        settled = true;
-        break; 
-      }
-    }
-
-    if (settled) {
-      gameOver = true;
-      gameOverTime = millis();
-      sendEvent("GROUND_HIT");
-    } else {
-      sendEvent("PLAYER_HIT");
-      lastHitTime = millis();
-      stillStartTime = 0; 
-    }
-  }
-
-  // =================================================
-  // 2. DETECT SOFT LANDING
-  // =================================================
-  float deltaMovement = abs(ax - prevAx) + abs(ay - prevAy) + abs(az - prevAz);
-  
-  if (deltaMovement < 0.15) {
-    if (stillStartTime == 0) {
-      stillStartTime = now;
-    } 
-    else if (now - stillStartTime > 500) {
-      gameOver = true;
-      gameOverTime = millis();
-      sendEvent("GROUND_HIT");
+    if (impactArmed &&
+        accelerationMagnitude >= IMPACT_THRESHOLD &&
+        now - lastHitTime >= IMPACT_COOLDOWN_MS) {
+      classifyingImpact = true;
+      impactArmed = false;
+      impactPeakMagnitude = accelerationMagnitude;
+      impactFirstPostPeakMagnitude = 0;
+      impactBelowPeakSampleCount = 0;
+      lastHitTime = now;
     }
   } else {
-    stillStartTime = 0;
+    if (accelerationMagnitude > impactPeakMagnitude) {
+      impactPeakMagnitude = accelerationMagnitude;
+      impactFirstPostPeakMagnitude = 0;
+      impactBelowPeakSampleCount = 0;
+    } else {
+      if (impactBelowPeakSampleCount == 0) {
+        impactFirstPostPeakMagnitude = accelerationMagnitude;
+      }
+
+      if (impactBelowPeakSampleCount < PEAK_CONFIRMATION_SAMPLES) {
+        impactBelowPeakSampleCount++;
+      }
+
+      if (impactBelowPeakSampleCount >= PEAK_CONFIRMATION_SAMPLES) {
+        completeImpact(
+          isHandImpact(
+            impactPeakMagnitude,
+            impactFirstPostPeakMagnitude
+          )
+        );
+      }
+    }
   }
-
-  prevAx = ax;
-  prevAy = ay;
-  prevAz = az;
-
-  delay(5);
 }
